@@ -1,0 +1,439 @@
+---
+title: "covid_phylog"
+author: "grp24"
+date: "12/11/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+#Set Up
+libraries
+```{r, echo=FALSE}
+library(ape)
+library(seqinr)
+library(phangorn)
+library(tidyverse)
+library(ggtext)
+library(RColorBrewer)
+```
+
+read in aligned data and grab some sequence info
+```{r}
+states<-read.aa("aligned_states_china_muscle.txt", format="fasta")
+coding<-read.dna("aln-fasta.txt",format="fasta")
+```
+
+how to read in info from accession #s only
+```{r, eval=F}
+accession<-read.delim("accession_all.txt")
+refseqR::save_AAfasta_from_xps(accession, "filepath/filename")
+```
+
+
+add in additional data
+```{r}
+new1<-read.delim("states_data.txt", header=FALSE)
+new2<-read.delim("china_data.txt", header=FALSE)
+new=rbind(new1,new2)
+names(new)<-c("accession","state","date")
+```
+
+update labels to just be the accession number for easier graphing later on
+```{r}
+old=as.matrix(names(states))
+states=updateLabel(states, old, as.character(new$accession))
+```
+
+
+#EDA
+cleaning up data for use in plotting
+```{r}
+timeline<-new%>%
+  na.omit()%>%
+  filter(state!="GA"&state!="IN")%>% #take out incorrectly queried data
+  mutate(dated= zoo::as.yearmon(date, "%Y-%m"))%>%
+  mutate(dated=format(dated, "%m"))%>%
+  mutate(period=ifelse(as.numeric(dated)<7,"pre July","post July"))%>%
+  mutate(region=case_when(
+    state %in% c("CA","NM","WA") ~ "West",
+    state %in% c("FL","GA","TX","SC") ~ "South",
+    state %in% c("NY","MD","VA","NC") ~ "East",
+    state %in% c("MN","WI","IL","IN") ~ "Midwest",
+    TRUE~ "China"
+  ))%>%
+  mutate(state=as.character(state))%>%
+  mutate(state_date=paste(as.character(state),as.numeric(dated)))%>%
+  na.omit()
+```
+
+distribution of sequence counts over time
+```{r}
+#change color pallete
+palette(brewer.pal(n=8,name = "Dark2"))
+timeline%>%ggplot(aes(dated,fill=region))+
+  geom_bar()+
+  theme(axis.text.x=element_text(angle=45, hjust=1, vjust=0.5),
+        text=element_text(size=7))+
+  labs(
+    title = "**COVID spike protein**  
+    <span style='font-size:11pt'> Sequence counts by US regions
+    <span style='color:#A3A500;'>East</span>, 
+    <span style='color:#00BF7D;'>Midwest</span>, 
+    <span style='color:#00B0f6;'>South</span>, and
+    <span style='color:#E76BF3;'>West</span>, including outgroup
+    <span style='color:#F8766D;'>China</span>",
+    subtitle="split into time intervals Pre July(n=79) and Post July(n=75)",
+    x = "month (2020)", y = "sequence count"
+  ) +
+  geom_vline(xintercept = 6.5,color="darkgrey")+
+  theme_minimal() +
+  geom_text(x=6.3, y=34.7, label="pre July",col="darkgrey",size=3, angle=90)+
+  geom_text(x=6.7, y=35, label="post July",col="darkgrey" ,size=3,angle=90)+
+  theme(
+    plot.title = element_markdown(lineheight = 1.1),
+    legend.text = element_markdown(size = 11),
+    legend.position = "none")
+```
+
+
+#Methods
+change alignment to phyDat object for use in the phanghon package.
+```{r}
+states_phyDat <- phyDat(states, type = "AA", levels = NULL)
+coding_phyDat<-phyDat(coding, type="DNA",levels=NULL)
+```
+
+run some model testing to see which distance matrix is best for our data.
+We can use mt list to pick lowest AIC.
+```{r}
+#mt takes 4everrrr!! change cores to 2 for faster implem in parallel
+#mt <- modelTest(states_phyDat, model="all") 
+states_dist <- dist.ml(states, model="FLU")
+
+coding_dist<-dist.dna(coding,model = "JC")
+```
+
+plotting AIC
+```{r, eval=F}
+mt%>%
+  arrange(AIC)%>%
+  ggplot(aes(reorder(Model,-AIC),AIC, col=AIC<8660))+
+  geom_point()+
+ scale_colour_manual(name = 'AIC > 8900', values = setNames(c('#1B9E77','black'),c(T, F)))+
+  theme(axis.text.x=element_text(angle=45, hjust=1, vjust=0.5),
+        text=element_text(size=7))+
+  labs(
+    title = "**AIC measures**  
+    <span style='font-size:11pt'>for finding
+    <span style='color:#1B9E77;'>best evolutionary models</span>
+    to be used in distance matrix calculation",
+    x = "Evolutionary Models", y = "AIC"
+  )+
+  theme_minimal() +
+  theme(
+    plot.title = element_markdown(lineheight = 1.1),
+    legend.text = element_markdown(size = 11),
+    axis.text.x=element_text(angle=60, hjust=1, vjust=1),
+    legend.position = "none")
+
+m2<-mt%>%
+  ggplot(aes(reorder(Model,AIC),AIC))+
+  geom_point(alpha=0.7)+
+  scale_colour_manual(name = 'AIC > 8950', values = setNames(c('purple','black'),c(T, F)))+
+  theme(axis.text.x=element_text(angle=60, hjust=1, vjust=1),
+        text=element_text(size=7))+
+  labs(
+    title = "**AIC measures**  
+    <span style='font-size:11pt'> for finding
+    <span style='color:#F8766D;'>best</span> models</span>",
+    x = "Model", y = "AIC"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_markdown(lineheight = 1.1))
+  
+```
+
+tree construction for NJ, UPGMA, fastME
+```{r}
+states_UPGMA <- upgma(states_dist)
+states_NJ  <- NJ(states_dist)
+states_fastme<-fastme.bal(states_dist)
+
+coding_UPGMA <- upgma(coding_dist)
+coding_NJ  <- NJ(coding_dist)
+coding_fastme<-fastme.bal(coding_dist)
+```
+
+plots coding region
+```{r}
+par(mfrow=c(1,3),oma = c(0, 0, 2, 0))
+plot(coding_UPGMA,
+     main = "UPGMA"
+     ,type="cladogram",
+     show.tip=TRUE)
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$region[match(coding_UPGMA$tip.label, timeline$accession)])
+          )
+plot(coding_NJ,
+     main = "NJ"
+     ,type="cladogram",
+     show.tip=FALSE)
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$region[match(coding_UPGMA$tip.label, timeline$accession)])
+          )
+plot(coding_fastme,
+     main = "fastME"
+     ,type="cladogram",
+     show.tip=FALSE)
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$region[match(coding_fastme$tip.label, timeline$accession)])
+          )
+```
+
+
+#Plots
+region plots amino acids
+```{r}
+#for adding state labels
+li<-timeline$state_date[match(states_UPGMA$tip.label, timeline$accession)]
+#three plots
+par(mfrow=c(1,3),oma = c(0, 0, 2, 0))
+
+#UPGMA
+plot(states_UPGMA,
+     main = "UPGMA"
+     ,type="cladogram",
+     show.tip=FALSE)
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$region[match(states_UPGMA$tip.label, timeline$accession)])
+          )
+
+#NJ
+plot(states_NJ,
+     main = "NJ",
+     type="cladogram",
+     show.tip=FALSE
+     )
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$region[match(states_NJ$tip.label, timeline$accession)])
+          )
+
+#fastME
+plot(states_fastme,
+     main = "FastME",
+     type="cladogram",
+     show.tip=FALSE
+     )
+tiplabels(pch=15, cex=.5, 
+          col = as.factor(timeline$region[match(states_fastme$tip.label, timeline$accession)])
+          )
+```
+region title with corresponding colors
+```{r}
+mtext(
+  expression( 
+    "Model selection based off of US region "*
+    phantom("East ") * 
+    phantom("Midwest ") * 
+    phantom("South ") * 
+    "and " *
+    phantom( "West " )*
+    "with outgroup "*
+    phantom("China")
+  ),
+  outer = TRUE,cex=0.7, adj=0
+  )
+mtext(
+  expression( 
+    phantom("Model selection based off of US region ")*
+    "East " *
+    phantom("Midwest ") * 
+    phantom("South ") * 
+    phantom("and ") *
+    phantom( "West " )*
+    phantom("with outgroup ")*
+    phantom("China")
+  ),
+  outer = TRUE,cex=0.7, adj=0, col=2
+  )
+mtext(
+  expression( 
+    phantom("Model selection based off of US region ")*
+    phantom("East ") * 
+    "Midwest " * 
+    phantom("South ") * 
+    phantom("and ") *
+    phantom( "West " )*
+    phantom("with outgroup ")*
+    phantom("China")
+  ),
+  outer = TRUE,cex=0.7, adj=0, col=3
+  )
+mtext(
+  expression( 
+    phantom("Model selection based off of US region ")*
+    phantom("East ") * 
+    phantom("Midwest ") * 
+    "South " * 
+    phantom("and ") *
+    phantom( "West " )*
+    phantom("with outgroup ")*
+    phantom("China")
+  ),
+  outer = TRUE,cex=0.7, adj=0, col=4
+  )
+mtext(
+  expression( 
+    phantom("Model selection based off of US region ")*
+    phantom("East ") * 
+    phantom("Midwest ") * 
+    phantom("South ") * 
+    phantom("and ") *
+    "West "*
+    phantom("with outgroup ")*
+    phantom("China")
+  ),
+  outer = TRUE,cex=0.7, adj=0, col=5
+  )
+mtext(
+  expression( 
+    phantom("Model selection based off of US region ")*
+    phantom("East ") * 
+    phantom("Midwest ") * 
+    phantom("South ") * 
+    phantom("and ") *
+    phantom("West ")*
+    phantom("with outgroup ")*
+    "China"
+  ),
+  outer = TRUE,cex=0.7, adj=0, col=1
+  )
+```
+
+period plots
+```{r}
+
+#for adding state labels
+li<-timeline$state_date[match(states_UPGMA$tip.label, timeline$accession)]
+
+#three plots
+par(mfrow=c(1,3),oma = c(0, 0, 2, 0))
+
+#UPGMA
+plot(states_UPGMA,
+     main = "UPGMA"
+     ,type="cladogram",
+     show.tip=FALSE)
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$period[match(states_UPGMA$tip.label, timeline$accession)])
+          )
+
+#NJ
+plot(states_NJ,
+     main = "NJ",
+     type="cladogram",
+     show.tip=FALSE
+     )
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$period[match(states_NJ$tip.label, timeline$accession)])
+          )
+
+#fastME
+plot(states_fastme,
+     main = "FastME",
+     type="cladogram",
+     show.tip=FALSE
+     )
+tiplabels(pch=15, cex=.5, 
+          col = as.factor(timeline$period[match(states_fastme$tip.label, timeline$accession)])
+          )
+```
+period title with corr colors
+```{r}
+#adding colored title
+mtext(
+  expression( 
+    "Model selection based on time intervals "*
+    phantom("Pre July ") * 
+    " and " *
+    phantom( "Post July" )
+  ),
+  outer = TRUE,cex=0.7, adj=0
+  )
+mtext(
+  expression( 
+    phantom("Model selection based on time intervals ")*
+      "Pre July " * 
+      phantom(" and " )*
+      phantom( "Post July" )),
+  outer = TRUE,cex=0.7, adj=0, col=2
+  )
+mtext(
+  expression( 
+    phantom("Model selection based on time intervals ")*
+      phantom("Pre July ") * 
+      phantom(" and " )*
+      "Post July" ),
+  outer = TRUE,cex=0.7, adj=0,col=1
+  )
+```
+
+correlation plots
+```{r}
+x <- as.vector(states_dist)
+y <- as.vector(as.dist(cophenetic(states_UPGMA)))
+z <- as.vector(as.dist(cophenetic(states_NJ)))
+v<-as.vector(as.dist(cophenetic(states_fastme)))
+
+par(mfrow=c(3,1),mar=c(1,1,1,1))
+plot(x, y, xlab="original pairwise distances", ylab="pairwise distances on the tree", main="UPGMA", pch=20, col="black", cex=2)
+abline(lm(y~x), col=4)
+cor(x,y)^2
+
+plot(x, z, xlab="original pairwise distances", ylab="pairwise distances on the tree", main="NJ", pch=20, col="black", cex=2)
+abline(lm(z~x), col=5)
+cor(x,z)^2
+
+plot(x, v, xlab="original pairwise distances", ylab="pairwise distances on the tree", main="fastME", pch=20, col="black", cex=2)
+abline(lm(v~x), col=3)
+cor(x,z)^2
+
+```
+
+#ML and Parsimony
+```{r, eval=F}
+fit = pml(states_NJ, states_phyDat)
+fit
+env <- attr(mt, "env")
+fit <- eval(get("FLU", env), env)
+fit
+plotBS(midpoint(fit$tree), bs, p = 50, type="p")
+```
+
+
+
+#Junk Drawer
+plotting states data
+```{r}
+library(usmap)
+monthly<-timeline%>%group_by(state,date)%>%count()
+periodly<-timeline%>%group_by(state,period)%>%count()
+```
+pick whether monthly or periodly
+```{r}
+p<-plot_usmap(data=periodly,values="n", 
+           include = c("CA","NM","WA","FL","GA","TX",
+                       "SC","NY","MD","VA","NC","MN",
+                       "WI","IL","IN"),
+           color="purple") +
+  scale_fill_continuous(
+    low = "white", high = "purple", name = "seq count", 
+    label = scales::comma
+  ) + theme(legend.position = "right")+
+  labs(title="Sequence counts per month in 2020")+
+  facet_wrap(~period)
+```
+
+
+  
