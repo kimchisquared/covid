@@ -1,14 +1,15 @@
 ---
-title: "covid_phylog"
-author: "grp24"
+title: "COVID Phylogenies"
+subtitle: "using phangorn"
+author: "Kim"
 date: "12/11/2020"
-output: html_document
+output: pdf_document
 editor_options: 
   chunk_output_type: console
 ---
-#Set Up
-libraries
-```{r, echo=FALSE}
+# Set Up
+
+```{r libraries, echo=FALSE, message=F}
 library(ape)
 library(seqinr)
 library(phangorn)
@@ -17,38 +18,31 @@ library(ggtext)
 library(RColorBrewer)
 ```
 
-read in aligned data and grab some sequence info
-```{r}
-states<-read.aa("aligned_states_china_muscle.txt", format="fasta")
-coding<-read.dna("aln-fasta.txt",format="fasta")
+Read in aligned data and grab some sequence info
+```{r data_in, warning=F}
+states<-read.aa("data/aligned_states_china_muscle.txt", format="fasta")
+coding<-read.dna("data/aln-fasta.txt",format="fasta")
 ```
 
-how to read in info from accession #s only
-```{r, eval=F}
-accession<-read.delim("accession_all.txt")
-refseqR::save_AAfasta_from_xps(accession, "filepath/filename")
+Add in additional data
+```{r add_data}
+state_data<-read.delim("data/states_data.txt", header=FALSE)
+china_data<-read.delim("data/china_data.txt", header=FALSE)
+label_data=rbind(state_data,china_data)
+names(label_data)<-c("accession","state","date")
 ```
 
-
-add in additional data
-```{r}
-new1<-read.delim("states_data.txt", header=FALSE)
-new2<-read.delim("china_data.txt", header=FALSE)
-new=rbind(new1,new2)
-names(new)<-c("accession","state","date")
-```
-
-update labels to just be the accession number for easier graphing later on
-```{r}
-old=as.matrix(names(states))
-states=updateLabel(states, old, as.character(new$accession))
+Update labels to just be the accession number for easier graphing later on
+```{r label_updated}
+old_labels=as.list(names(states))
+states=updateLabel(states, old_labels, as.character(label_data$accession))
 ```
 
 
-#EDA
-cleaning up data for use in plotting
-```{r}
-timeline<-new%>%
+# EDA
+Cleaning up data for use in plotting
+```{r data_clean}
+timeline<-label_data%>%
   na.omit()%>%
   filter(state!="GA"&state!="IN")%>% #take out incorrectly queried data
   mutate(dated= zoo::as.yearmon(date, "%Y-%m"))%>%
@@ -67,7 +61,8 @@ timeline<-new%>%
 ```
 
 distribution of sequence counts over time
-```{r}
+
+```{r counts_plot, echo=F}
 #change color pallete
 palette(brewer.pal(n=8,name = "Dark2"))
 timeline%>%ggplot(aes(dated,fill=region))+
@@ -96,26 +91,31 @@ timeline%>%ggplot(aes(dated,fill=region))+
 ```
 
 
-#Methods
-change alignment to phyDat object for use in the phanghon package.
-```{r}
+# Methods
+
+Change alignment to phyDat object for use in the phanghon package.
+```{r aa2phydat}
 states_phyDat <- phyDat(states, type = "AA", levels = NULL)
 coding_phyDat<-phyDat(coding, type="DNA",levels=NULL)
 ```
 
-run some model testing to see which distance matrix is best for our data.
-We can use mt list to pick lowest AIC.
-```{r}
+Run some model testing to see which distance matrix is best for our data.
+We can use mt list to pick lowest AIC. Note: the modelTest function takes a while. If you would like to knit this as a pdf you'll need to do eval=T for both model_testing and aic_plot chunks.
+```{r model_testing, eval=F}
 #mt takes 4everrrr!! change cores to 2 for faster implem in parallel
-#mt <- modelTest(states_phyDat, model="all") 
+mt <- modelTest(states_phyDat, model="all") 
+```
+
+```{r set_models}
 states_dist <- dist.ml(states, model="FLU")
 
 coding_dist<-dist.dna(coding,model = "JC")
 ```
 
 plotting AIC
-```{r, eval=F}
-mt%>%
+
+```{r aic_plot, echo=F, eval=F}
+aic <-mt%>%
   arrange(AIC)%>%
   ggplot(aes(reorder(Model,-AIC),AIC, col=AIC<8660))+
   geom_point()+
@@ -136,26 +136,10 @@ mt%>%
     axis.text.x=element_text(angle=60, hjust=1, vjust=1),
     legend.position = "none")
 
-m2<-mt%>%
-  ggplot(aes(reorder(Model,AIC),AIC))+
-  geom_point(alpha=0.7)+
-  scale_colour_manual(name = 'AIC > 8950', values = setNames(c('purple','black'),c(T, F)))+
-  theme(axis.text.x=element_text(angle=60, hjust=1, vjust=1),
-        text=element_text(size=7))+
-  labs(
-    title = "**AIC measures**  
-    <span style='font-size:11pt'> for finding
-    <span style='color:#F8766D;'>best</span> models</span>",
-    x = "Model", y = "AIC"
-  ) +
-  theme_minimal() +
-  theme(
-    plot.title = element_markdown(lineheight = 1.1))
-  
 ```
 
-tree construction for NJ, UPGMA, fastME
-```{r}
+Tree construction for NJ, UPGMA, fastME
+```{r tree_construction}
 states_UPGMA <- upgma(states_dist)
 states_NJ  <- NJ(states_dist)
 states_fastme<-fastme.bal(states_dist)
@@ -165,13 +149,16 @@ coding_NJ  <- NJ(coding_dist)
 coding_fastme<-fastme.bal(coding_dist)
 ```
 
-plots coding region
-```{r}
+#Plots
+
+Basic Tree structure
+
+```{r plot_trees}
 par(mfrow=c(1,3),oma = c(0, 0, 2, 0))
 plot(coding_UPGMA,
      main = "UPGMA"
      ,type="cladogram",
-     show.tip=TRUE)
+     show.tip=FALSE)
 tiplabels(pch=15,cex=.5, 
           col = as.factor(timeline$region[match(coding_UPGMA$tip.label, timeline$accession)])
           )
@@ -191,10 +178,9 @@ tiplabels(pch=15,cex=.5,
           )
 ```
 
+Region plots amino acids
 
-#Plots
-region plots amino acids
-```{r}
+```{r region_tree_plots, echo=F}
 #for adding state labels
 li<-timeline$state_date[match(states_UPGMA$tip.label, timeline$accession)]
 #three plots
@@ -228,9 +214,9 @@ plot(states_fastme,
 tiplabels(pch=15, cex=.5, 
           col = as.factor(timeline$region[match(states_fastme$tip.label, timeline$accession)])
           )
-```
-region title with corresponding colors
-```{r}
+
+#Region title with corresponding colors
+
 mtext(
   expression( 
     "Model selection based off of US region "*
@@ -311,8 +297,34 @@ mtext(
   )
 ```
 
-period plots
-```{r}
+```{r plot_trees_again}
+par(mfrow=c(1,3),oma = c(0, 0, 2, 0))
+plot(coding_UPGMA,
+     main = "UPGMA"
+     ,type="cladogram",
+     show.tip=FALSE)
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$region[match(coding_UPGMA$tip.label, timeline$accession)])
+          )
+plot(coding_NJ,
+     main = "NJ"
+     ,type="cladogram",
+     show.tip=FALSE)
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$region[match(coding_UPGMA$tip.label, timeline$accession)])
+          )
+plot(coding_fastme,
+     main = "fastME"
+     ,type="cladogram",
+     show.tip=FALSE)
+tiplabels(pch=15,cex=.5, 
+          col = as.factor(timeline$region[match(coding_fastme$tip.label, timeline$accession)])
+          )
+```
+
+Time period plots
+
+```{r period_tree_plots, echo=F}
 
 #for adding state labels
 li<-timeline$state_date[match(states_UPGMA$tip.label, timeline$accession)]
@@ -348,9 +360,7 @@ plot(states_fastme,
 tiplabels(pch=15, cex=.5, 
           col = as.factor(timeline$period[match(states_fastme$tip.label, timeline$accession)])
           )
-```
-period title with corr colors
-```{r}
+
 #adding colored title
 mtext(
   expression( 
@@ -380,7 +390,8 @@ mtext(
 ```
 
 correlation plots
-```{r}
+
+```{r corr_plots_trees, echo=F}
 x <- as.vector(states_dist)
 y <- as.vector(as.dist(cophenetic(states_UPGMA)))
 z <- as.vector(as.dist(cophenetic(states_NJ)))
@@ -401,8 +412,9 @@ cor(x,z)^2
 
 ```
 
+
+```{r, eval=F, echo=F}
 #ML and Parsimony
-```{r, eval=F}
 fit = pml(states_NJ, states_phyDat)
 fit
 env <- attr(mt, "env")
@@ -413,13 +425,16 @@ plotBS(midpoint(fit$tree), bs, p = 50, type="p")
 
 
 
-#Junk Drawer
-plotting states data
+# Junk Drawer
+
+Plotting states data
+
 ```{r}
 library(usmap)
 monthly<-timeline%>%group_by(state,date)%>%count()
 periodly<-timeline%>%group_by(state,period)%>%count()
 ```
+
 pick whether monthly or periodly
 ```{r}
 p<-plot_usmap(data=periodly,values="n", 
